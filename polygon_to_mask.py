@@ -21,10 +21,10 @@ def rgb2dec(x: list) -> int:
     RGB to decimal decoding.
     
     Args:
-        x (tuple): A tuple containing the RGB color values.
+        x (tuple): A tuple containing the RGB colour values.
         
     Returns:
-        int: The decimal representation of the RGB color values.
+        int: The decimal representation of the RGB colour values.
     """
     return x[0] * 65536 + x[1] * 256 + x[2]
 
@@ -71,10 +71,46 @@ def line_intersection(line1: tuple, line2: tuple) -> tuple:
     return x, y
 
 
+def walk_lines(points: list, mask: np.array) -> tuple:
+    """
+    Walk the polygon points and draw lines. The direction (order of points/lines) is clockwise so 
+    the inside of the polygon is always on the right side along each line. The shifts represent the 
+    direction of the inside of the polygon. The colour of each line is its index encoded to RGB. 
+
+    Args:
+        points (list): List or array of points representing the points of the polygon.
+        mask (ndarray): Binary mask.
+
+    Returns:
+        tuple: A tuple containing the generated mask with polylines and shifts.
+
+    """
+    # Create mask polylines where line colors is its encoded index
+    mask_poly = np.zeros((*mask.shape, 3), dtype=np.uint8)
+    normals = np.empty_like(points, dtype=float)
+    n_lines = len(points)
+    for i in range(n_lines):
+        j = (i + 1) % n_lines
+        a = points[i]
+        b = points[j]
+        cv2.line(mask_poly, a, b, dec2rgb(i + 1), 1)  # this function accepts only uint8
+        dx = b[1] - a[1]
+        dy = b[0] - a[0]
+        normal = np.array([dy, -dx])  # watch out for the sign and order!
+        norm = np.linalg.norm(normal)
+        normals[i] = normal / norm if norm != 0 else normal  # unit normals
+
+    # Spatial line shifts in pixels
+    shifts = normals.round().astype(int)
+    shifts = shifts[:, [1, 0]]  # swap x and y
+
+    return mask_poly, shifts
+
+
 def polygon2mask(points: list, shape: Tuple[int, int]) -> np.array:
     """
-    Convert an eclosed polygon defined by a list of points into a binary mask.
-    This implemntation works with self-overlapping polygons.
+    Convert an enclosed polygon defined by a list of points into a binary mask.
+    This implementation works with self-overlapping polygons.
 
     Args:
         points (list): List of points defining the polygon.
@@ -92,27 +128,12 @@ def polygon2mask(points: list, shape: Tuple[int, int]) -> np.array:
     if len(contours) < 2:
         return mask
 
-    # Create mask polylines where line colors is its encoded index
-    mask_poly = np.zeros((*mask.shape, 3), dtype=np.uint8)
-    normals = np.empty_like(points, dtype=float)
+    # Get mask polylines and shifts
+    mask_poly, shifts = walk_lines(points, mask)
+
+    # Draw each contour
     n_lines = len(points)
-    for i in range(n_lines):
-        j = (i + 1) % n_lines
-        a = points[i]
-        b = points[j]
-        cv2.line(mask_poly, a, b, dec2rgb(i + 1), 1)
-        dx = b[1] - a[1]
-        dy = b[0] - a[0]
-        normal = np.array([dy, -dx])  # watch out for the sign and order!
-        norm = np.linalg.norm(normal)
-        normals[i] = normal / norm if norm != 0 else normal  # unit normals
-
-    # Spatial line shifts in pixels
-    shifts = normals.round().astype(int)
-    shifts = shifts[:, [1, 0]]  # swap x and y
-
-    # Draw each contour, skip the first one (the outer contour)
-    for i in range(1, len(contours)):
+    for i in range(len(contours)):
         mask_contour = np.zeros_like(mask)
         mask_contour = cv2.polylines(mask_contour, [contours[i]], isClosed=True, color=1, thickness=1)
 
@@ -160,6 +181,18 @@ def polygon2mask(points: list, shape: Tuple[int, int]) -> np.array:
         mask_component = cv2.fillPoly(np.zeros_like(mask), [contours[i]], color=1)
         ero_mask_component = cv2.erode(mask_component, np.ones((3, 3), np.uint8), iterations=1)
         mask_intersection = cv2.bitwise_and(mask_insides, ero_mask_component)
+
+        if i == 0:
+            # Check the direction of the polygon lines (clockwise or counterclockwise)
+            # If the direction is counterclockwise, reverse the points
+            mask_component_inv = cv2.bitwise_not(mask_component)
+            mask_intersection_inv = cv2.bitwise_and(mask_insides, mask_component_inv)
+            if mask_intersection_inv.any():
+                # The "inside" lines are outside the polygon, so the points are reversed
+                points = points[::-1]
+                mask_poly, shifts = walk_lines(points, mask)
+            continue
+
         if mask_intersection.any():
             mask = cv2.bitwise_or(mask, mask_component)
 
@@ -173,6 +206,11 @@ if __name__ == "__main__":
                        [150, 150], [150, 170], [100, 250], [250, 250], [294, 258], 
                        [265, 280], [238, 257], [170, 280], [10, 400], [10, 200]])
     shape = (500, 500)
+
+    ## Test the counterclockwise direction of the polygon
+    # points = points[::-1]
+    ##
+
     mask = polygon2mask(points, shape)
 
     # Comparison with the cv2.fillPoly function
@@ -182,7 +220,7 @@ if __name__ == "__main__":
                               thickness=1)
     fillPoly = cv2.fillPoly(np.zeros(shape, dtype=np.uint8), [points], color=1)
 
-    cv2.imwrite("mask.png", mask * 255)
+    cv2.imwrite("polygon2mask.png", mask * 255)
     cv2.imwrite("polylines.png", polylines)
     cv2.imwrite("fillPoly.png", fillPoly * 255)
     
